@@ -1,0 +1,3 @@
+npm run dev
+% 新开终端
+& "$env:USERPROFILE\cloudflared.exe" tunnel --url http://localhost:5173

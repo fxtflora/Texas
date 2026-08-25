@@ -1,0 +1,16 @@
+{
+  "name": "texas-holdem",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Texas Hold'em No-Limit Poker — H5 multiplayer platform",
+  "scripts": {
+    "predev": "node scripts/kill-ports.cjs",
+    "dev": "concurrently --kill-others -n \"SERVER,CLIENT\" -c \"bgBlue.bold,bgGreen.bold\" \"npm run dev --prefix server\" \"npm run dev --prefix client\"",
+    "dev:server": "npm run dev --prefix server",
+    "dev:client": "npm run dev --prefix client",
+    "install:all": "npm install --prefix server && npm install --prefix client"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
