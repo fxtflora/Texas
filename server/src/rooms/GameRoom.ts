@@ -43,10 +43,11 @@ export class GameRoom {
   private gameState: GameState | null = null
   private deck:      Card[]           = []
   private handNumber = 0
-  private dealerSeat = 0
+  private dealerSeat = -1
   private bots       = new Map<string, BotInterface>()
   betweenHands = false          // 每局结束后等待房主手动开始
   private foldWinnerIds: string[] = []  // 弃牌获胜时待决定亮牌的玩家ID列表
+  private needsRebuyDecision: string[] = []  // 清零后待决定充值/旁观的玩家ID
   private lastHandResult: any = null
 
   // ── 计时器 ──────────────────────────────────────────────
@@ -102,6 +103,7 @@ export class GameRoom {
       privilegeLevel: 0,
       isReady:        false,
       hasActed:       false,
+      rebuyCount:     0,
       connectedAt:    Date.now(),
       lastActiveAt:   Date.now(),
     }
@@ -126,6 +128,12 @@ export class GameRoom {
     const timer = this.reconnectTimers.get(oldId)
     if (timer) { clearTimeout(timer); this.reconnectTimers.delete(oldId) }
 
+    // 主动断开旧 socket（如果还活着），防止僵尸连接占用计数
+    const oldSocket = this.sockets.get(oldId)
+    if (oldSocket && oldSocket.id !== socket.id && oldSocket.connected) {
+      oldSocket.disconnect(true)
+    }
+
     // 更新 socketId
     const updated = { ...player, id: socket.id, status: player.status === 'disconnected' ? 'active' : player.status } as Player
     this.players.delete(oldId)
@@ -136,7 +144,7 @@ export class GameRoom {
     if (this.hostId === oldId) this.hostId = socket.id
     socket.join(this.code)
 
-    logger.socket(TAG, `[${this.code}] ${player.nickname} 重连成功`)
+    logger.socket(TAG, `[${this.code}] ${player.nickname} 重连成功 (${oldId.slice(-4)} → ${socket.id.slice(-4)})`)
     this.broadcastRoomState()
     return { ok: true, player: updated }
   }
@@ -215,7 +223,7 @@ export class GameRoom {
       role: 'player', seatIndex: seatIdx,
       chips: this.config.startingChips, bet: 0, totalBet: 0,
       holeCards: null, status: 'waiting', isBot: true,
-      privilegeLevel: 0, isReady: true, hasActed: false,
+      privilegeLevel: 0, isReady: true, hasActed: false, rebuyCount: 0,
       connectedAt: Date.now(), lastActiveAt: Date.now(),
     }
     this.players.set(botId, botPlayer)
@@ -399,7 +407,9 @@ export class GameRoom {
   hostNextHand(socketId: string): void {
     if (socketId !== this.hostId) { return }
     if (!this.betweenHands) return
+    if (this.needsRebuyDecision.length > 0) return  // 等待清零玩家决定
     this.betweenHands = false
+    this.foldWinnerIds = []
     this.lastHandResult = null
     this.startHand()
   }
@@ -519,6 +529,9 @@ export class GameRoom {
     this.broadcast('game:handComplete', {
       isFoldWin,
       foldWinnerIds: this.foldWinnerIds,
+      dealerSeatIndex:     this.gameState.dealerSeatIndex,
+      smallBlindSeatIndex: this.gameState.smallBlindSeatIndex,
+      bigBlindSeatIndex:   this.gameState.bigBlindSeatIndex,
       winners: winners.map(w => ({
         id:       w.playerId,
         nickname: playerList.find(p => p.id === w.playerId)?.nickname ?? '',
@@ -535,6 +548,77 @@ export class GameRoom {
     this.lastHandResult = { isFoldWin, foldWinnerIds: [...this.foldWinnerIds] }
     this.betweenHands = true
     this.gameState = null
+
+    // ── 清零玩家处理 ────────────────────────────────────────
+    // Bot 自动充值；真人等待决定
+    this.needsRebuyDecision = []
+    for (const p of playerList.filter(p => p.seatIndex !== null && p.chips === 0)) {
+      if (p.isBot) {
+        p.chips = this.config.startingChips
+        p.rebuyCount = (p.rebuyCount ?? 0) + 1
+        logger.socket(TAG, `[${this.code}] bot ${p.nickname} 自动充值 (第${p.rebuyCount}次)`)
+      } else {
+        this.needsRebuyDecision.push(p.id)
+      }
+    }
+
+    this.broadcastRoomState()
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // 充值 / 旁观
+  // ─────────────────────────────────────────────────────────
+
+  /** 玩家选择充值继续 */
+  playerRebuy(socketId: string): void {
+    const player = this.players.get(socketId)
+    if (!player || !this.needsRebuyDecision.includes(socketId)) return
+    player.chips = this.config.startingChips
+    player.rebuyCount = (player.rebuyCount ?? 0) + 1
+    this.needsRebuyDecision = this.needsRebuyDecision.filter(id => id !== socketId)
+    this.broadcastRoomState()
+    this.broadcastSystem(`${player.nickname} 充值继续（第 ${player.rebuyCount} 次）`)
+  }
+
+  /** 玩家选择放弃，转为观众 */
+  playerSitOut(socketId: string): void {
+    const player = this.players.get(socketId)
+    if (!player || !this.needsRebuyDecision.includes(socketId)) return
+    player.role       = 'spectator'
+    player.seatIndex  = null
+    player.chips      = 0
+    this.needsRebuyDecision = this.needsRebuyDecision.filter(id => id !== socketId)
+    // 若该玩家是房主，转让房主
+    if (socketId === this.hostId) {
+      const nextHost = [...this.players.values()].find(p => !p.isBot && p.seatIndex !== null)
+      if (nextHost) {
+        nextHost.role = 'host'
+        this.hostId   = nextHost.id
+        this.emit(nextHost.id, 'system:message', { type: 'info', text: '你已成为新房主', timestamp: Date.now() })
+      }
+    }
+    this.broadcastRoomState()
+    this.broadcastSystem(`${player.nickname} 筹码耗尽，成为观众`)
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // 转让房主
+  // ─────────────────────────────────────────────────────────
+
+  /** 房主将房主权限转让给指定玩家 */
+  transferHost(socketId: string, targetId: string): void {
+    if (socketId !== this.hostId) return
+    const target = this.players.get(targetId)
+    if (!target || target.isBot) return   // 不能转让给 bot
+
+    const current = this.players.get(socketId)
+    if (current) current.role = 'player'
+
+    target.role = 'host'
+    this.hostId = targetId
+
+    this.emit(targetId, 'system:message', { type: 'info', text: '你已成为新房主', timestamp: Date.now() })
+    this.broadcastSystem(`房主已转让给 ${target.nickname}`)
     this.broadcastRoomState()
   }
 
@@ -582,7 +666,9 @@ export class GameRoom {
       const delay = getBotThinkDelay(bot.difficulty)
       await sleep(delay)
 
+      // 延迟后重新检查：游戏状态、当前回合是否仍是该 bot
       if (!this.gameState) return
+      if (this.gameState.currentSeatIndex !== seat) return
 
       const action = await bot.decide({
         gameState:    this.gameState,
@@ -642,6 +728,7 @@ export class GameRoom {
       hostId: this.hostId,
       betweenHands: this.betweenHands,
       foldWinnerIds: [...this.foldWinnerIds],
+      needsRebuyDecision: [...this.needsRebuyDecision],
     }
   }
 
@@ -658,7 +745,7 @@ export class GameRoom {
       role: p.role, seatIndex: p.seatIndex, chips: p.chips,
       bet: p.bet, totalBet: p.totalBet, hasHoleCards: !!p.holeCards,
       status: p.status, isBot: p.isBot, privilegeLevel: p.privilegeLevel,
-      isReady: p.isReady,
+      isReady: p.isReady, rebuyCount: p.rebuyCount ?? 0,
     }
   }
 

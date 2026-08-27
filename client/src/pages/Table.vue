@@ -8,10 +8,50 @@
         <span class="hand-num" v-if="displayHandNum > 0">第 {{ displayHandNum }} 局</span>
       </div>
       <div class="top-right">
+        <button class="stats-toggle-btn" :class="{ active: showStats }" @click="showStats = !showStats" title="牌局统计">📊</button>
         <span v-if="store.isSpectator" class="spectator-badge-top">👁 观众</span>
         <span v-else class="my-chips-badge">🪙 {{ myPlayer?.chips ?? 0 }}</span>
       </div>
     </div>
+
+    <!-- 牌局统计面板（25vh 可折叠） -->
+    <Transition name="stats-slide">
+      <div v-if="showStats" class="stats-panel">
+        <!-- 头部摘要 -->
+        <div class="stats-summary">
+          <div class="stat-item">
+            <span class="stat-label">第</span>
+            <span class="stat-value accent">{{ displayHandNum || '—' }}</span>
+            <span class="stat-label">局</span>
+          </div>
+          <div class="stat-divider" />
+          <div class="stat-item">
+            <span class="stat-label">起始筹码</span>
+            <span class="stat-value">{{ store.roomState?.config.startingChips ?? '—' }}</span>
+          </div>
+          <div class="stat-divider" />
+          <div class="stat-item">
+            <span class="stat-label">全场筹码</span>
+            <span class="stat-value">{{ totalChipsInPlay }}</span>
+          </div>
+        </div>
+        <!-- 玩家盈亏明细 -->
+        <div class="stats-players">
+          <div
+            v-for="p in statsPlayers"
+            :key="p.id"
+            class="stats-player-row"
+            :class="{ 'is-me': p.id === store.myId }"
+          >
+            <span class="sp-name">{{ p.nickname }}<span v-if="p.rebuyCount > 0" class="sp-rebuy">×{{ p.rebuyCount + 1 }}</span></span>
+            <span class="sp-chips">{{ p.chips }}</span>
+            <span class="sp-pnl" :class="p.pnl >= 0 ? 'pnl-pos' : 'pnl-neg'">
+              {{ p.pnl >= 0 ? '+' : '' }}{{ p.pnl }}
+            </span>
+          </div>
+        </div>
+      </div>
+    </Transition>
 
     <!-- 牌桌场景（椭圆+坐位） -->
     <div class="table-scene" ref="sceneRef">
@@ -85,6 +125,7 @@
           <span v-if="seat.player.role === 'host'" class="role-host">👑</span>
           <span v-if="seat.player.isBot" class="role-bot">🤖</span>
           <span v-if="seat.player.status === 'allIn'" class="role-allin">ALL IN</span>
+          <span v-if="seat.player.rebuyCount > 0" class="role-rebuy">已充值{{ seat.player.rebuyCount }}手</span>
         </div>
 
         <!-- 筹码 / 结算增减 -->
@@ -145,10 +186,15 @@
           <span class="raise-min-label">{{ minRaise }}</span>
           <input
             v-model.number="raiseAmt"
-            type="range" :min="minRaise" :max="maxChips" :step="bigBlind"
+            type="range" :min="minRaise" :max="maxChips" :step="1"
             class="raise-slider"
           />
-          <span class="raise-amt">{{ raiseAmt }}</span>
+          <input
+            v-model.number="raiseAmt"
+            type="number" :min="minRaise" :max="maxChips"
+            class="raise-input"
+            @focus="($event.target as HTMLInputElement).select()"
+          />
           <button class="btn-xs" @click="raiseAmt = Math.min(pot + (myPlayer?.bet ?? 0), maxChips)">锅</button>
         </div>
         <div class="action-btns">
@@ -162,6 +208,13 @@
           </button>
           <button v-if="sl?.canAllIn" class="abtn abtn-allin" @click="act('allIn')">全押</button>
         </div>
+      </div>
+    </Transition>
+
+    <!-- 中途加入提示（本局未发牌，等待下一局） -->
+    <Transition name="slide-up">
+      <div v-if="isWaitingForNextHand" class="waiting-next-bar">
+        <span>⏳ 等待当前局结束后参与游戏…</span>
       </div>
     </Transition>
 
@@ -210,13 +263,27 @@
           <button class="scbtn scbtn-muck" @click="onShowCards(false)">不展示</button>
         </div>
 
+        <!-- 充值/旁观决策（本局清零时） -->
+        <div v-if="myNeedsRebuy" class="rebuy-prompt">
+          <span class="rebuy-prompt-text">
+            💸 筹码已耗尽，选择：
+          </span>
+          <button class="btn-rebuy" @click="sock.rebuy()">
+            充值 {{ store.roomState?.config.startingChips }} 继续
+          </button>
+          <button class="btn-sitout" @click="sock.sitOutAsSpectator()">成为观众</button>
+        </div>
+        <div v-else-if="(store.roomState?.needsRebuyDecision ?? []).length > 0" class="wait-hint-bar">
+          等待 {{ store.roomState?.needsRebuyDecision.length }} 位玩家决定是否继续…
+        </div>
+
         <!-- 房主操作 / 等待提示 -->
         <div class="result-bar-foot">
           <button v-if="store.isHost && canStartNext" class="btn-next-hand-bar" @click="onNextHand">
             开始下一局 ▶
           </button>
-          <span v-else-if="!store.isHost" class="wait-hint-bar">等待房主开始下一局…</span>
-          <span v-else-if="store.handComplete.isFoldWin" class="wait-hint-bar">
+          <span v-else-if="!store.isHost && !myNeedsRebuy" class="wait-hint-bar">等待房主开始下一局…</span>
+          <span v-else-if="store.handComplete.isFoldWin && (store.roomState?.foldWinnerIds ?? []).length > 0" class="wait-hint-bar">
             等待 {{ (store.roomState?.foldWinnerIds ?? []).length }} 位玩家决定是否亮牌…
           </span>
         </div>
@@ -262,11 +329,37 @@ const displayHandNum = computed(() =>
 )
 const bigBlind = computed(() => store.roomState?.config.bigBlind ?? 20)
 
+// ── 统计面板 ────────────────────────────────────────────────
+const showStats = ref(false)
+
+// 每位玩家的实时盈亏（已用筹码 = (1+rebuyCount)*startingChips，净值=chips-已用）
+const statsPlayers = computed(() => {
+  const startingChips = store.roomState?.config.startingChips ?? 0
+  return (store.roomState?.players ?? [])
+    .filter(p => p.seatIndex !== null || p.rebuyCount > 0)
+    .map(p => ({
+      id:         p.id,
+      nickname:   p.nickname,
+      chips:      p.chips,
+      rebuyCount: p.rebuyCount,
+      // 投入 = (1+rebuyCount) * startingChips，pnl = chips - 投入
+      pnl: p.chips - (1 + p.rebuyCount) * startingChips,
+    }))
+    .sort((a, b) => b.chips - a.chips)
+})
+
+// 全场筹码 = 所有玩家筹码之和 + 当前底池（底池还未分配）
+const totalChipsInPlay = computed(() => {
+  const playerSum = (store.roomState?.players ?? []).reduce((s, p) => s + p.chips, 0)
+  const potSum    = gs.value ? ((gs.value.mainPot ?? 0) + (gs.value.sidePots ?? []).reduce((s: number, sp: any) => s + sp.amount, 0)) : 0
+  return playerSum + potSum
+})
+
 // 游戏状态快捷访问
 const gs = computed(() => store.roomState?.gameState as any)
-const dealerSeat  = computed(() => gs.value?.dealerSeatIndex ?? store.handComplete?.winners[0]?.seatIndex ?? -1)
-const sbSeat      = computed(() => gs.value?.smallBlindSeatIndex ?? -1)
-const bbSeat      = computed(() => gs.value?.bigBlindSeatIndex ?? -1)
+const dealerSeat  = computed(() => gs.value?.dealerSeatIndex      ?? store.handComplete?.dealerSeatIndex      ?? -1)
+const sbSeat      = computed(() => gs.value?.smallBlindSeatIndex  ?? store.handComplete?.smallBlindSeatIndex  ?? -1)
+const bbSeat      = computed(() => gs.value?.bigBlindSeatIndex    ?? store.handComplete?.bigBlindSeatIndex    ?? -1)
 
 // 结算期间保留公共牌（gameState 在结算时为 null）
 const displayCommunityCards = computed(() =>
@@ -433,7 +526,9 @@ const lastActionLabel = ref('')
 
 watch(() => store.lastAction, (a) => {
   if (!a) return
-  const player = store.seatedPlayers.find(p => p.nickname === a.playerName)
+  // 优先用 playerId 精确匹配，避免同名玩家显示错乱
+  const player = store.seatedPlayers.find(p => p.id === a.playerId)
+             ?? store.seatedPlayers.find(p => p.nickname === a.playerName)
   if (!player) return
 
   const phase = (a as any).phase ?? store.gamePhase
@@ -457,13 +552,20 @@ const isFoldWinner = computed(() =>
   && (store.roomState?.foldWinnerIds ?? []).includes(store.myId)
 )
 
-// 房主可开始下一局：等所有持牌玩家决定完（foldWinnerIds 清空）后才允许
+// 房主可开始下一局：等所有持牌玩家决定完（foldWinnerIds 清空）
+// 且所有清零玩家决定完（needsRebuyDecision 清空）后才允许
 const canStartNext = computed(() => {
   const hc = store.handComplete
   if (!hc) return false
   if (hc.isFoldWin && (store.roomState?.foldWinnerIds ?? []).length > 0) return false
+  if ((store.roomState?.needsRebuyDecision ?? []).length > 0) return false
   return true
 })
+
+// 当前我是否需要做充值/旁观决定
+const myNeedsRebuy = computed(() =>
+  (store.roomState?.needsRebuyDecision ?? []).includes(store.myId)
+)
 
 function isWinner(pid: string): boolean {
   return store.handComplete?.winners.some(w => w.id === pid) ?? false
@@ -510,6 +612,12 @@ const raiseAmt  = ref(0)
 watch(sl, v => {
   if (v) { raiseAmt.value = v.minRaise; showRaise.value = false }
 })
+// 用户在数字框直接输入时夹紧范围
+watch(raiseAmt, v => {
+  if (!sl.value) return
+  const clamped = Math.max(sl.value.minRaise, Math.min(sl.value.maxRaise, Math.round(v)))
+  if (clamped !== v) raiseAmt.value = clamped
+})
 
 function onRaiseClick() {
   if (showRaise.value) { act('raise', raiseAmt.value); showRaise.value = false }
@@ -528,6 +636,13 @@ const suitSym    = (s: string) => (SUIT_SYM as any)[s] ?? s
 const displayRank = (r: string) => (RANK_DISP as any)[r] ?? r
 const cardSuit   = (c: Card) => c.suit
 const handNameZh  = (n: string) => (HAND_NAME_ZH as any)[n] ?? n
+
+// 玩家有座位但本局未被发牌（中途加入）
+const isWaitingForNextHand = computed(() => {
+  const p = myPlayer.value
+  if (!p) return false
+  return p.seatIndex !== null && p.status === 'waiting' && inGame.value && !store.handComplete
+})
 
 // ── 生命周期 ────────────────────────────────────────────────
 onMounted(() => { if (!store.inRoom) router.replace('/') })
@@ -569,6 +684,69 @@ function doLeave() { sock.leaveRoom(); router.replace('/') }
 }
 .hand-num { font-size: 12px; color: #4d5561; }
 .my-chips-badge { font-size: 13px; font-weight: 600; color: #f0c040; }
+.top-right { display: flex; align-items: center; gap: 8px; }
+.stats-toggle-btn {
+  background: none; border: 1px solid #30363d; border-radius: 6px;
+  color: #8b949e; font-size: 15px; cursor: pointer;
+  padding: 1px 6px; line-height: 1.4; transition: background .15s, border-color .15s;
+}
+.stats-toggle-btn.active  { border-color: #f0c040; background: #f0c04015; }
+.stats-toggle-btn:active  { opacity: .7; }
+
+/* ── 统计面板 ──────────────────────────────────────────────── */
+.stats-panel {
+  flex-shrink: 0;
+  height: 25vh;
+  background: #0d1117ee;
+  border-bottom: 1px solid #1e4520;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 8px 14px 6px;
+  gap: 6px;
+}
+/* 顶部摘要行 */
+.stats-summary {
+  display: flex; align-items: center; gap: 4px;
+  flex-shrink: 0;
+}
+.stat-item  { display: flex; align-items: baseline; gap: 3px; }
+.stat-label { font-size: 11px; color: #8b949e; }
+.stat-value { font-size: 14px; font-weight: 700; color: #e6edf3; }
+.stat-value.accent { color: #f0c040; font-size: 16px; }
+.stat-divider { width: 1px; height: 16px; background: #30363d; margin: 0 8px; }
+/* 玩家明细列表 */
+.stats-players {
+  flex: 1; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.stats-player-row {
+  display: flex; align-items: center;
+  padding: 4px 8px;
+  background: #161b22;
+  border-radius: 6px;
+  border: 1px solid #21262d;
+  font-size: 12px;
+  flex-shrink: 0;
+}
+.stats-player-row.is-me { border-color: #2ea04344; }
+.sp-name {
+  flex: 1; font-weight: 600; color: #c9d1d9;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: flex; align-items: center; gap: 3px;
+}
+.sp-rebuy { font-size: 10px; color: #79c0ff; font-weight: 400; }
+.sp-chips { width: 52px; text-align: right; color: #f0c040; font-weight: 700; }
+.sp-pnl   { width: 58px; text-align: right; font-weight: 700; }
+.pnl-pos  { color: #3fb950; }
+.pnl-neg  { color: #f85149; }
+/* 动画 */
+.stats-slide-enter-active, .stats-slide-leave-active {
+  transition: max-height .25s ease, opacity .2s;
+  overflow: hidden;
+}
+.stats-slide-enter-from, .stats-slide-leave-to { max-height: 0; opacity: 0; }
+.stats-slide-enter-to,   .stats-slide-leave-from { max-height: 25vh; opacity: 1; }
 
 /* ── 桌面场景 ─────────────────────────────────────────────── */
 .table-scene {
@@ -726,6 +904,15 @@ function doLeave() { sock.leaveRoom(); router.replace('/') }
 }
 .role-host  { font-size: 10px; }
 .role-bot   { font-size: 10px; }
+.role-rebuy {
+  font-size: 9px; font-weight: 700;
+  color: #79c0ff;
+  background: #79c0ff1a;
+  border: 1px solid #79c0ff44;
+  border-radius: 4px;
+  padding: 0 3px;
+  white-space: nowrap;
+}
 .role-allin {
   font-size: 9px;
   font-weight: 800;
@@ -874,6 +1061,19 @@ function doLeave() { sock.leaveRoom(); router.replace('/') }
   flex-shrink: 0;
   backdrop-filter: blur(12px);
 }
+.waiting-next-bar {
+  position: fixed;
+  bottom: 0; left: 50%; transform: translateX(-50%);
+  width: 100%; max-width: 480px;
+  background: #1a2d1aee;
+  border-top: 1px solid #2e5530;
+  padding: 14px 16px;
+  text-align: center;
+  font-size: 14px;
+  color: #8fb48f;
+  z-index: 95;
+  backdrop-filter: blur(10px);
+}
 .raise-row {
   display: flex; align-items: center; gap: 8px;
   margin-bottom: 8px;
@@ -881,8 +1081,25 @@ function doLeave() { sock.leaveRoom(); router.replace('/') }
   border-bottom: 1px solid #1e4520;
 }
 .raise-min-label { font-size: 11px; color: #8b949e; white-space: nowrap; }
-.raise-slider { flex: 1; accent-color: #f0c040; }
-.raise-amt    { font-size: 14px; font-weight: 700; color: #f0c040; min-width: 38px; text-align: right; }
+.raise-slider { flex: 1; accent-color: #f0c040; min-width: 0; }
+.raise-input {
+  width: 64px;
+  background: #21262d;
+  border: 1px solid #444c56;
+  border-radius: 6px;
+  color: #f0c040;
+  font-size: 14px;
+  font-weight: 700;
+  text-align: center;
+  padding: 2px 4px;
+  outline: none;
+  flex-shrink: 0;
+}
+.raise-input:focus { border-color: #f0c040; }
+/* 隐藏数字输入框的上下箭头 */
+.raise-input::-webkit-inner-spin-button,
+.raise-input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.raise-input[type=number] { -moz-appearance: textfield; }
 .btn-xs {
   background: #21262d; border: 1px solid #30363d; border-radius: 5px;
   color: #e6edf3; font-size: 11px; padding: 2px 8px; cursor: pointer;
@@ -980,6 +1197,26 @@ function doLeave() { sock.leaveRoom(); router.replace('/') }
 }
 .btn-next-hand-bar:active { opacity: .7; }
 .wait-hint-bar { color: #4d5561; font-size: 12px; padding: 4px 0; }
+
+/* 充值决策提示 */
+.rebuy-prompt {
+  display: flex; align-items: center; flex-wrap: wrap;
+  gap: 8px; padding: 8px 0;
+  border-top: 1px solid #30363d; margin-top: 6px;
+}
+.rebuy-prompt-text { font-size: 13px; color: #f0c040; font-weight: 700; }
+.btn-rebuy {
+  background: linear-gradient(135deg, #238636, #2ea043);
+  color: #fff; border: none; border-radius: 8px;
+  padding: 6px 14px; font-size: 13px; font-weight: 700; cursor: pointer;
+}
+.btn-rebuy:active { opacity: .75; }
+.btn-sitout {
+  background: #30363d; color: #c9d1d9;
+  border: 1px solid #444c56; border-radius: 8px;
+  padding: 6px 14px; font-size: 13px; cursor: pointer;
+}
+.btn-sitout:active { opacity: .75; }
 
 /* ── Toast ────────────────────────────────────────────────── */
 .toast-list {

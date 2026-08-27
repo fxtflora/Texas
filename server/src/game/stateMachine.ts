@@ -392,9 +392,10 @@ function findFirstToActPostFlop(players: Player[], dealerSeat: number): number {
   const active = players
     .filter(p => p.status === 'active' && p.seatIndex !== null)
     .sort((a, b) => {
-      // 按照距庄家座位的顺时针距离排序
-      const ad = (a.seatIndex! - dealerSeat + N * 2) % N
-      const bd = (b.seatIndex! - dealerSeat + N * 2) % N
+      // 翻后第一个行动者是庄家左边（SB 位），庄家最后行动
+      // 用 (seat - dealer - 1 + N*k) % N 使庄左边玩家距离为 0，庄家距离为 N-1
+      const ad = (a.seatIndex! - dealerSeat - 1 + N * 10) % N
+      const bd = (b.seatIndex! - dealerSeat - 1 + N * 10) % N
       return ad - bd
     })
 

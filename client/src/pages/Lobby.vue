@@ -101,6 +101,15 @@
             class="kick-btn"
             @click="sock.removeBot(p.id)"
           >✕</button>
+          <!-- 房主可以转让房主权（仅对非自己的真人玩家） -->
+          <button
+            v-if="store.isHost && !p.isBot && p.id !== store.myId"
+            class="transfer-btn"
+            :class="{ 'transfer-confirm': confirmTransferId === p.id }"
+            @click="doTransferHost(p.id)"
+          >
+            {{ confirmTransferId === p.id ? '确认？' : '👑转让' }}
+          </button>
         </div>
 
         <!-- 空位 -->
@@ -199,6 +208,21 @@ const botDiff  = ref<'easy' | 'medium' | 'hard'>('medium')
 const blindPair = ref('10/20')
 const editCfg  = ref<Partial<RoomConfig>>({})
 const copied   = ref(false)
+const confirmTransferId = ref<string | null>(null)  // 正在确认转让的目标 ID
+
+function doTransferHost(targetId: string) {
+  if (confirmTransferId.value !== targetId) {
+    // 第一次点击：进入确认态，3s 后自动取消
+    confirmTransferId.value = targetId
+    setTimeout(() => {
+      if (confirmTransferId.value === targetId) confirmTransferId.value = null
+    }, 3000)
+  } else {
+    // 第二次点击：确认转让
+    sock.transferHost(targetId)
+    confirmTransferId.value = null
+  }
+}
 
 onMounted(() => {
   if (!store.inRoom) { router.replace('/'); return }
@@ -391,6 +415,23 @@ function doLeave() {
 .spectator-badge { background: #8b949e22; color: #8b949e; border: 1px solid #8b949e44; }
 .kick-btn {
   background: none; border: none; color: #da3633; font-size: 14px; cursor: pointer; padding: 2px 6px;
+}
+.transfer-btn {
+  background: none;
+  border: 1px solid #f0c04055;
+  color: #f0c040;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 2px 8px;
+  transition: background .15s;
+  white-space: nowrap;
+}
+.transfer-btn:active { background: #f0c04022; }
+.transfer-confirm {
+  background: #f0c04022;
+  border-color: #f0c040;
+  font-weight: 700;
 }
 
 .add-bot-row {

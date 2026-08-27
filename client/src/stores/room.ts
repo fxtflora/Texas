@@ -23,7 +23,7 @@ export const useRoomStore = defineStore('room', () => {
   // ── 游戏动态信息 ────────────────────────────────────────
   const timerExpiry  = ref<number>(0)
   const timerPlayer  = ref<string>('')
-  const lastAction   = ref<{ playerName: string; action: string; amount: number } | null>(null)
+  const lastAction   = ref<{ playerId: string; playerName: string; action: string; amount: number; phase?: string } | null>(null)
   const gameResult   = ref<unknown | null>(null)
   const showdown     = ref<unknown | null>(null)
 
@@ -31,6 +31,9 @@ export const useRoomStore = defineStore('room', () => {
   const handComplete = ref<{
     isFoldWin: boolean
     foldWinnerIds: string[]
+    dealerSeatIndex: number
+    smallBlindSeatIndex: number
+    bigBlindSeatIndex: number
     winners: Array<{ id: string; nickname: string; seatIndex: number; potAmount: number; handName: string }>
     showdownPlayers: Array<{ id: string; nickname: string; seatIndex: number; holeCards: [Card, Card]; handName: string }>
     playerDeltas: Array<{ id: string; nickname: string; delta: number }>
@@ -87,6 +90,11 @@ export const useRoomStore = defineStore('room', () => {
   function setRoomState(state: PublicRoomState) {
     roomState.value = state
     shareUrl.value  = state.shareUrl
+    // 当 room:state 更新时同步自己的角色（充值/旁观后角色会变）
+    if (myId.value) {
+      const me = state.players.find(p => p.id === myId.value)
+      if (me && me.role !== myRole.value) myRole.value = me.role
+    }
   }
 
   function onJoined(payload: {
@@ -119,7 +127,7 @@ export const useRoomStore = defineStore('room', () => {
     timerExpiry.value = 0
   }
 
-  function recordAction(data: { playerName: string; action: string; amount: number }) {
+  function recordAction(data: { playerId: string; playerName: string; action: string; amount: number; phase?: string }) {
     lastAction.value = data
     setTimeout(() => { lastAction.value = null }, 3000)
   }

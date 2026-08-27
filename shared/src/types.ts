@@ -64,6 +64,7 @@ export interface Player {
   privilegeLevel: PrivilegeLevel
   isReady: boolean
   hasActed: boolean           // 本轮是否已主动行动过（防止大盲被跳过）
+  rebuyCount: number          // 已充值次数
   connectedAt: number
   lastActiveAt: number
 }
@@ -83,6 +84,7 @@ export interface PublicPlayer {
   isBot: boolean
   privilegeLevel: PrivilegeLevel
   isReady: boolean
+  rebuyCount: number          // 已充值次数（0 = 未充值）
 }
 
 // ─── 游戏阶段与行动 ────────────────────────────────────────
@@ -186,6 +188,7 @@ export interface PublicRoomState {
   hostId: string            // 房主玩家ID
   betweenHands: boolean     // 每局结束后、房主开始下一局前为 true
   foldWinnerIds: string[]   // 弃牌获胜时仍待决定是否亮牌的玩家ID列表
+  needsRebuyDecision: string[]  // 本局结束后筹码清零、等待充值/旁观决定的玩家ID
 }
 
 // ─── 胜率 HUD ──────────────────────────────────────────────

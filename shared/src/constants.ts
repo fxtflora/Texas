@@ -85,8 +85,8 @@ export const BOT_THINK_DELAY: Record<string, [number, number]> = {
 /** 下一局开始倒计时（ms） */
 export const NEXT_HAND_DELAY_MS = 5000
 
-/** 断线重连宽限期（ms） */
-export const RECONNECT_GRACE_MS = 30_000
+/** 断线重连宽限期（ms）—— 手机切换 App 约需 60s，给足余量 */
+export const RECONNECT_GRACE_MS = 90_000
 
 /** 房间邀请码长度 */
 export const ROOM_CODE_LENGTH = 6

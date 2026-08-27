@@ -62,6 +62,9 @@ const io = new Server(httpServer, {
   cors: { origin: ORIGIN.split(','), methods: ['GET', 'POST'], credentials: true },
   path: '/socket.io',
   transports: ['websocket', 'polling'],
+  pingInterval: 25_000,  // 每 25s 发一次心跳
+  pingTimeout:  60_000,  // 移动端后台挂起后 60s 内重连均不断开（默认 20s 太短）
+  connectTimeout: 30_000,
 })
 
 // ── RoomManager（全局单例） ──────────────────────────────────
@@ -76,10 +79,10 @@ io.on('connection', (socket) => {
 setInterval(() => {
   const conns  = io.sockets.sockets.size
   const rooms  = roomManager.list()
-  if (conns > 0) {
+  if (conns > 0 || rooms.length > 0) {
     logger.info('Server', `在线连接: ${conns}，活跃房间: ${rooms.length}`)
   }
-}, 30_000)
+}, 60_000)
 
 // ── 启动 ─────────────────────────────────────────────────────
 httpServer.listen(PORT, () => {

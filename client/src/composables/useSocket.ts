@@ -21,6 +21,14 @@ const socketId  = ref<string>('')
 const lastError = ref<string>('')
 const pingMs    = ref<number>(0)
 
+// Page Visibility 监听器只注册一次
+let visibilityListenerAdded = false
+
+// 上次加入的房间信息（用于断线重连后自动重新加入）
+let lastRoomCode     = ''
+let lastNickname     = ''
+let lastAsSpectator  = false
+
 // ── 会话 Token（持久化到 localStorage） ─────────────────────
 function getSessionToken(): string {
   let token = localStorage.getItem('tx_session_token')
@@ -50,6 +58,8 @@ function bindRoomEvents(sock: Socket): void {
   }) => {
     const store = useRoomStore()
     store.onJoined(payload)
+    // 同步缓存，保证下次重连能回到正确房间
+    if (payload.roomState?.code) lastRoomCode = payload.roomState.code
   })
 
   sock.on('room:state', (state: PublicRoomState) => {
@@ -71,7 +81,7 @@ function bindRoomEvents(sock: Socket): void {
     }
   })
 
-  sock.on('game:action', (data: { playerName: string; action: string; amount: number }) => {
+  sock.on('game:action', (data: { playerId: string; playerName: string; seatIndex: number; action: string; amount: number; phase: string }) => {
     useRoomStore().recordAction(data)
   })
 
@@ -126,35 +136,69 @@ function bindRoomEvents(sock: Socket): void {
 
 // ── 初始化连接 ───────────────────────────────────────────────
 function connect(): Socket {
-  if (socket?.connected) return socket
+  // 关键修复：只要 socket 对象存在就复用（不管 connected 状态）
+  // Socket.io 会在内部自动重连，不能重复 io() 创建新实例
+  if (socket) {
+    if (!socket.connected) socket.connect()
+    return socket
+  }
 
   status.value = 'connecting'
 
   socket = io({
     path:        '/socket.io',
     transports:  ['websocket', 'polling'],
-    reconnection: true,
-    reconnectionAttempts: 10,
+    reconnection:         true,
+    reconnectionAttempts: Infinity,   // 手机网络不稳定，无限重试
     reconnectionDelay:    1000,
-    reconnectionDelayMax: 5000,
-    timeout: 10000,
+    reconnectionDelayMax: 8000,
+    timeout:              20000,
   })
 
+  // ── 事件监听只在新 socket 创建时绑定一次 ─────────────────
   socket.on('connect', () => {
     status.value    = 'connected'
     socketId.value  = socket!.id ?? ''
     lastError.value = ''
+
+    // 断线重连后自动重新加入房间
+    const store    = useRoomStore()
+    const code     = lastRoomCode || store.roomState?.code || ''
+    const nickname = lastNickname
+      || store.roomState?.players.find(p => p.id === store.myId)?.nickname
+      || localStorage.getItem('tx_last_nickname')
+      || '玩家'
+    const asSpec   = lastAsSpectator || (store.myRole === 'spectator')
+
+    if (code) {
+      socket!.emit('room:join', {
+        code,
+        nickname,
+        sessionToken: getSessionToken(),
+        asSpectator:  asSpec,
+      })
+    }
   })
 
   socket.on('disconnect', () => {
-    status.value    = 'disconnected'
-    socketId.value  = ''
+    status.value   = 'disconnected'
+    socketId.value = ''
   })
 
   socket.on('connect_error', (err) => {
     status.value    = 'error'
     lastError.value = err.message
   })
+
+  // ── Page Visibility API：只注册一次，页面回到前台时触发重连 ──
+  if (typeof document !== 'undefined' && !visibilityListenerAdded) {
+    visibilityListenerAdded = true
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible' && socket && !socket.connected) {
+        socket.connect()
+      }
+    })
+  }
 
   bindRoomEvents(socket)
   return socket
@@ -173,6 +217,9 @@ function getSocket(): Socket | null { return socket }
 function createRoom(nickname: string, config?: Partial<RoomConfig>) {
   const sock = socket
   if (!sock?.connected) return
+  lastNickname    = nickname
+  lastAsSpectator = false
+  localStorage.setItem('tx_last_nickname', nickname)
   const payload: CreateRoomPayload = {
     nickname, sessionToken: getSessionToken(), config,
   }
@@ -182,6 +229,10 @@ function createRoom(nickname: string, config?: Partial<RoomConfig>) {
 function joinRoom(code: string, nickname: string, asSpectator = false) {
   const sock = socket
   if (!sock?.connected) return
+  lastRoomCode    = code.toUpperCase()
+  lastNickname    = nickname
+  lastAsSpectator = asSpectator
+  localStorage.setItem('tx_last_nickname', nickname)
   const payload: JoinRoomPayload = {
     code: code.toUpperCase(), nickname,
     sessionToken: getSessionToken(), asSpectator,
@@ -190,6 +241,9 @@ function joinRoom(code: string, nickname: string, asSpectator = false) {
 }
 
 function leaveRoom() {
+  lastRoomCode    = ''
+  lastNickname    = ''
+  lastAsSpectator = false
   socket?.emit('room:leave')
   useRoomStore().reset()
 }
@@ -220,6 +274,18 @@ function nextHand() {
 
 function showCards(show: boolean) {
   socket?.emit('game:showCards', { show })
+}
+
+function rebuy() {
+  socket?.emit('player:rebuy')
+}
+
+function sitOutAsSpectator() {
+  socket?.emit('player:sitOut')
+}
+
+function transferHost(targetId: string) {
+  socket?.emit('room:transferHost', { targetId })
 }
 
 function requestCards(targetPlayerId: string) {
@@ -262,5 +328,8 @@ export function useSocket() {
     nextHand,
     showCards,
     requestCards,
+    rebuy,
+    sitOutAsSpectator,
+    transferHost,
   }
 }

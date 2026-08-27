@@ -40,6 +40,7 @@ export function registerHandlers(io: Server, socket: Socket, roomManager: RoomMa
       myRole:       result.player!.role,
       sessionToken,
       shareUrl:     roomState.shareUrl,
+      myCards:      result.player!.holeCards ?? undefined,
     })
     logger.socket(TAG, `[${room.code}] 房间创建, 房主=${nickname}, URL=${roomState.shareUrl}`)
   }))
@@ -63,6 +64,7 @@ export function registerHandlers(io: Server, socket: Socket, roomManager: RoomMa
       myRole:       result.player!.role,
       sessionToken,
       shareUrl:     roomState.shareUrl,
+      myCards:      result.player!.holeCards ?? undefined,
     })
     // 通知房间其他人
     socket.to(room.code).emit('room:state', roomState)
@@ -133,6 +135,27 @@ export function registerHandlers(io: Server, socket: Socket, roomManager: RoomMa
     const room = findRoom(roomManager, socket.id)
     if (!room) return
     room.playerShowCards(socket.id, payload?.show ?? false)
+  }))
+
+  // ── 玩家：筹码清零后选择充值继续 ──────────────────────
+  socket.on('player:rebuy', () => ok(() => {
+    const room = findRoom(roomManager, socket.id)
+    if (!room) return
+    room.playerRebuy(socket.id)
+  }))
+
+  // ── 玩家：筹码清零后选择成为观众 ──────────────────────
+  socket.on('player:sitOut', () => ok(() => {
+    const room = findRoom(roomManager, socket.id)
+    if (!room) return
+    room.playerSitOut(socket.id)
+  }))
+
+  // ── 房主：转让房主 ──────────────────────────────────────
+  socket.on('room:transferHost', (payload: { targetId: string }) => ok(() => {
+    const room = findRoom(roomManager, socket.id)
+    if (!room) return
+    room.transferHost(socket.id, payload?.targetId)
   }))
 
   // ── 观众：私密查看某玩家手牌 ──────────────────────────
